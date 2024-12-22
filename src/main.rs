@@ -9,7 +9,7 @@ use cortex_m::{self as _, interrupt::Mutex, interrupt::free};
 use cortex_m_rt::entry;
 use microbit::pac::interrupt;
 use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::{InputPin, OutputPin, StatefulOutputPin};
+use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use microbit::hal::gpiote::Gpiote;
 use microbit::{
     board::Buttons,

@@ -1,109 +1,95 @@
 #![no_std]
 #![no_main]
 
+use cortex_m::interrupt::Mutex;
+use microbit::display::blocking::Display;
 // use core::ptr::write_volatile;
-
+// use microbit::pac::interrupt;
+// use random::Xorshift64;
+use time::Ticker;
+// use ::time::Time;
 use core::cell::RefCell;
-
-use cortex_m::{self as _, interrupt::Mutex, interrupt::free};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use cortex_m_rt::entry;
-use microbit::pac::interrupt;
-use embedded_hal::delay::DelayNs;
-use embedded_hal::digital::{OutputPin, StatefulOutputPin};
+use handler::{get_position, update_position};
+use initial::{init_ball, init_buttons, init_timer1};
 use microbit::hal::gpiote::Gpiote;
-use microbit::{
-    board::Buttons,
-    pac::{self, GPIOTE}
-};
 use microbit::board::Board;
 use microbit::hal::timer::Timer;
 use panic_halt as _;
-use rtt_target::rprintln;
+use rtt_target::rtt_init_print;
+use state::Ball;
+use microbit::
+    pac::TIMER1
+
+;
 // use rtt_target::{rprintln, rtt_init_print};
-mod timer;
+mod state;
+mod initial;
+mod handler;
+mod random;
+mod time;
+
+
+
+pub static TICKER: Ticker = Ticker {
+    ovr_count: AtomicU32::new(0),
+    rtc: Mutex::new(RefCell::new(None))
+};
 
 static GPIO: Mutex<RefCell<Option<Gpiote>>> = Mutex::new(RefCell::new(None));
-static STATE: Mutex<RefCell<Option<bool>>> = Mutex::new(RefCell::new(None));
+static TIMER: Mutex<RefCell<Option<Timer<TIMER1>>>> = Mutex::new(RefCell::new(None));
+static BALL: Mutex<RefCell<Option<Ball>>> = Mutex::new(RefCell::new(None));
+static PRICE_COL: AtomicUsize = AtomicUsize::new(6);
+static PRICE_ROW: AtomicUsize = AtomicUsize::new(6);
+// static RTCTIMER: Mutex<RefCell<Option<RtcTimer>>>
+// COL AND ROW helps use know the current coland row 
+static COL: AtomicUsize = AtomicUsize::new(0);
+static ROW: AtomicUsize = AtomicUsize::new(0);
+// static TIME: AtomicU32 = AtomicU32::new(0);
+
+
 
 #[entry]
 fn main() -> ! {
-    rtt_target::rtt_init_print!();
-    let board = Board::take().unwrap();
-    let mut timer = Timer::new(board.TIMER0);
-    // To get all five rows and five columns
-    let (mut col, mut row) = board.display_pins.degrade();
-    // Because we would only be using row1 we would set it high
-    row[0].set_high().ok();
-    // Now `button` is a generic GPIO pin without button-specific functionality.
-    init_buttons(board.GPIOTE, board.buttons);
-    let active_col = 0;
-    col[active_col].set_low().ok();
-    loop {
-        if toggle_button() {
-            col[active_col].toggle().ok();
+    rtt_init_print!();
+    if let Some(mut board) = Board::take() {
+        Ticker::init(board.RTC0, &mut board.NVIC);
+        let mut timer = Timer::new(board.TIMER0);
+        let mut display = Display::new(board.display_pins);
+        init_buttons(board.GPIOTE, board.buttons);
+        init_ball(5, 5);
+        init_timer1(board.TIMER1);
+        let mut m: [[u8;5];5] = [[0;5];5]; 
+        let mut previous_price_col = 6;
+        let mut previous_price_row = 6;
+        
+        loop {
+            let position = get_position();
+            COL.store(position.0, Ordering::SeqCst);
+            ROW.store(position.1, Ordering::SeqCst);
+            let price_row = PRICE_ROW.load(Ordering::SeqCst);
+            let price_col = PRICE_COL.load(Ordering::SeqCst);
+            m[position.1][position.0] = 1;
+            if price_col == 6 {
+                // We either clear it or do nothing
+                if previous_price_col != 6 {
+                    m[previous_price_row][previous_price_col] = 0;
+                    previous_price_col = 6;
+                    previous_price_row = 6;
+                }
+            } else {
+                m[price_row][price_col] = 1;
+                previous_price_col = price_col;
+                previous_price_row = price_row;
+            }
+            display.show(&mut timer, m, 100);
+            m[position.1][position.0] = 0;
+            display.show(&mut timer, m, 100);
+            update_position();     
+            // Check if 5 seconds have elapsed
         }
-        row[0].toggle().ok();
-        timer.delay_ms(300);
     }
+    loop {}
 }
 
-fn toggle_button() -> bool {
-    free(|cs| {
-        let mut state = false;
-        if let Some(result) = STATE.borrow(cs).borrow_mut().take() {
-            if result {
-                state = true;
-            }
-        }
-        return state;
-    })
-}
-
-fn init_buttons(board_gpiote: GPIOTE, buttons: Buttons) {
-    let gpiote = Gpiote::new(board_gpiote);
-    let channel0 = gpiote.channel0();
-    channel0
-    .input_pin(&buttons.button_a.degrade())
-    .hi_to_lo()
-    .enable_interrupt();
-    channel0.reset_events();
-    let channel1 = gpiote.channel1();
-
-    channel1
-    .input_pin(&buttons.button_b.degrade())
-    .hi_to_lo()
-    .enable_interrupt();
-
-    channel1.reset_events();
-    free(move |cs| {
-            *GPIO.borrow(cs).borrow_mut() = Some(gpiote);
-            unsafe {
-                pac::NVIC::unmask(pac::interrupt::GPIOTE);
-            }
-            pac::NVIC::unpend(pac::interrupt::GPIOTE);
-        }
-
-    )
-}
-
-
-#[interrupt]
-fn GPIOTE() {
-    free(|cs| {
-        if let Some(gpiote) = GPIO.borrow(cs).borrow_mut().as_ref() {
-            let chan_one = gpiote.channel0().is_event_triggered();
-            rprintln!("State came through 1");
-            let chan_two = gpiote.channel1().is_event_triggered();
-            if chan_one {
-                *STATE.borrow(cs).borrow_mut() = Some(true);
-            };
-            if chan_two {
-                *STATE.borrow(cs).borrow_mut() = Some(true);
-            };
-            gpiote.channel0().reset_events();
-            gpiote.channel1().reset_events(); 
-            gpiote.reset_events();
-        }
-    })
-
-}

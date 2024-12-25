@@ -20,3 +20,15 @@ nrf52833-hal = "0.18.0"
 embedded-hal = "1.0.0"
 microbit-v2 = "0.15.1"
 fugit = "0.3.7"
+ds323x = "0.5.0"
+critical-section = "1.1.2"
+rtcc = "0.3.2"
+volatile-register = "0.2.2"
+time = { version = "0.3.37", default-features = false}
+embedded-time = "0.12.1"
+
+
+
+[features]
+default = []
+trigger-overflow = []
